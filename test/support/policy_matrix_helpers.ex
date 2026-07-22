@@ -3,22 +3,9 @@ defmodule Lightning.PolicyMatrixHelpers do
 
   import ExUnit.Assertions
 
-  alias Lightning.Accounts.User
-  alias Lightning.Projects.ProjectUser
+  alias Lightning.AuthCoverage.Personas
 
   @type decision :: :allow | :deny
-
-  def project_role_personas do
-    enum_to_atoms(ProjectUser.RolesEnum.__valid_values__())
-  end
-
-  def instance_role_personas do
-    enum_to_atoms(User.RolesEnum.__valid_values__())
-  end
-
-  def expected_project_personas(extra \\ [:non_member, :support_user]) do
-    project_role_personas() ++ extra
-  end
 
   def assert_actions_covered!(specs, expected_actions) do
     actual_actions = Enum.map(specs, & &1.action)
@@ -33,67 +20,115 @@ defmodule Lightning.PolicyMatrixHelpers do
            "Matrix contains unsupported action specs: #{inspect(extra)}"
   end
 
-  def assert_matrix_complete!(action, matrix, expected_personas) do
-    matrix_personas =
+  def assert_project_role_scope_matrix_complete!(
+        action,
+        matrix,
+        cross_project_overrides \\ %{}
+      ) do
+    matrix_roles =
       matrix
       |> Map.keys()
       |> Enum.map(&normalize_persona/1)
       |> Enum.uniq()
 
-    expected_personas =
-      expected_personas
+    expected_roles =
+      Personas.roles()
       |> Enum.map(&normalize_persona/1)
       |> Enum.uniq()
 
-    missing = expected_personas -- matrix_personas
-    extra = matrix_personas -- expected_personas
+    missing = expected_roles -- matrix_roles
+    extra = matrix_roles -- expected_roles
 
     assert missing == [],
-           "Action #{inspect(action)} is missing personas: #{inspect(missing)}. " <>
-             "expected=#{inspect(expected_personas)} matrix=#{inspect(matrix_personas)}"
+           "Action #{inspect(action)} is missing roles: #{inspect(missing)}. " <>
+             "expected=#{inspect(expected_roles)} matrix=#{inspect(matrix_roles)}"
 
     assert extra == [],
-           "Action #{inspect(action)} has unknown personas: #{inspect(extra)}. " <>
-             "expected=#{inspect(expected_personas)} matrix=#{inspect(matrix_personas)}"
+           "Action #{inspect(action)} has unknown roles: #{inspect(extra)}. " <>
+             "expected=#{inspect(expected_roles)} matrix=#{inspect(matrix_roles)}"
 
-    invalid_decisions =
+    invalid_matrix_decisions =
       matrix
-      |> Enum.reject(fn {_persona, decision} -> decision in [:allow, :deny] end)
+      |> Enum.reject(fn {_role, decision} -> decision in [:allow, :deny] end)
 
-    assert invalid_decisions == [],
-           "Action #{inspect(action)} has invalid decisions: #{inspect(invalid_decisions)}"
+    assert invalid_matrix_decisions == [],
+           "Action #{inspect(action)} has invalid role decisions: " <>
+             "#{inspect(invalid_matrix_decisions)}"
+
+    overrides_roles =
+      cross_project_overrides
+      |> Map.keys()
+      |> Enum.map(&normalize_persona/1)
+      |> Enum.uniq()
+
+    override_extra = overrides_roles -- expected_roles
+
+    assert override_extra == [],
+           "Action #{inspect(action)} has cross-project override keys " <>
+             "outside role set: #{inspect(override_extra)}"
+
+    invalid_override_decisions =
+      cross_project_overrides
+      |> Enum.reject(fn {_role, decision} -> decision in [:allow, :deny] end)
+
+    assert invalid_override_decisions == [],
+           "Action #{inspect(action)} has invalid cross-project decisions: " <>
+             "#{inspect(invalid_override_decisions)}"
   end
 
-  def assert_policy_matrix!(
-        policy_module,
-        specs,
-        expected_personas,
-        subject_builder
-      ) do
-    Enum.each(specs, fn %{action: action, matrix: matrix} = spec ->
-      assert_matrix_complete!(action, matrix, expected_personas)
+  def assert_project_scope_policy_matrix!(policy_module, specs, subject_builder) do
+    personas = Personas.all()
 
-      Enum.each(expected_personas, fn persona ->
+    Enum.each(specs, fn %{action: action, matrix: matrix} = spec ->
+      overrides = Map.get(spec, :cross_project_overrides, %{})
+
+      assert_project_role_scope_matrix_complete!(action, matrix, overrides)
+
+      Enum.each(personas, fn persona ->
         {actor, subject} = subject_builder.(persona, spec)
 
         allowed? = Bodyguard.permit?(policy_module, action, actor, subject)
 
-        expected_allowed? = matrix |> Map.fetch!(persona) |> allow?()
+        expected_allowed? =
+          persona
+          |> expected_project_scope_decision(spec)
+          |> allow?()
 
         assert allowed? == expected_allowed?,
                "Unexpected decision for #{inspect(policy_module)} #{inspect(action)} " <>
-                 "persona #{inspect(persona)}: expected #{inspect(expected_allowed?)}, " <>
+                 "persona #{inspect(persona.id)}: expected #{inspect(expected_allowed?)}, " <>
                  "got #{inspect(allowed?)}"
       end)
     end)
   end
 
+  defp expected_project_scope_decision(
+         %Personas{membership_scope: :same_project, role: role},
+         %{matrix: matrix}
+       ),
+       do: Map.fetch!(matrix, role)
+
+  defp expected_project_scope_decision(
+         %Personas{membership_scope: :other_project, role: role},
+         %{cross_project_overrides: overrides}
+       ),
+       do: Map.get(overrides, role, :deny)
+
+  defp expected_project_scope_decision(
+         %Personas{membership_scope: :other_project, role: _role},
+         _spec
+       ),
+       do: :deny
+
+  # Non-membership stays hard deny for this matrix category by design.
+  defp expected_project_scope_decision(
+         %Personas{membership_scope: :none},
+         _spec
+       ),
+       do: :deny
+
   defp allow?(:allow), do: true
   defp allow?(:deny), do: false
-
-  defp enum_to_atoms(values) do
-    Enum.map(values, &normalize_persona/1)
-  end
 
   defp normalize_persona(value) when is_atom(value), do: value
 

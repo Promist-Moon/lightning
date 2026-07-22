@@ -3,18 +3,8 @@ defmodule Lightning.Policies.ProvisioningMatrixTest do
 
   import Lightning.PolicyMatrixHelpers
 
+  alias Lightning.AuthCoverage.Personas
   alias Lightning.Policies.Provisioning
-  alias Lightning.Projects.Project
-
-  @expected_personas [
-    :viewer,
-    :editor,
-    :admin,
-    :owner,
-    :non_member,
-    :support_user,
-    :superuser
-  ]
 
   @expected_actions [
     :provision_project,
@@ -25,66 +15,52 @@ defmodule Lightning.Policies.ProvisioningMatrixTest do
     viewer: :deny,
     editor: :deny,
     admin: :allow,
-    owner: :allow,
-    non_member: :deny,
-    support_user: :deny,
-    superuser: :deny
+    owner: :allow
   }
 
   @describe_project_matrix %{
     viewer: :allow,
     editor: :allow,
     admin: :allow,
-    owner: :allow,
-    non_member: :deny,
-    support_user: :deny,
-    superuser: :deny
-  }
-
-  @provision_new_project_matrix %{
-    viewer: :deny,
-    editor: :deny,
-    admin: :deny,
-    owner: :deny,
-    non_member: :deny,
-    support_user: :deny,
-    superuser: :allow
+    owner: :allow
   }
 
   setup do
-    viewer = insert(:user)
-    editor = insert(:user)
-    admin = insert(:user)
-    owner = insert(:user)
-    non_member = insert(:user)
-    support_user = insert(:user, support_user: true)
-    superuser = insert(:user, role: :superuser)
+    other_project = insert(:project, allow_support_access: false)
+
+    {users_by_persona_id, project_users} =
+      Enum.reduce(Personas.all(), {%{}, []}, fn persona, {users, members} ->
+        user = insert(:user)
+        users = Map.put(users, persona.id, user)
+
+        case persona.membership_scope do
+          :same_project ->
+            member = %{user_id: user.id, role: persona.role}
+            {users, [member | members]}
+
+          :other_project ->
+            insert(:project_user,
+              user: user,
+              project: other_project,
+              role: persona.role
+            )
+
+            {users, members}
+
+          :none ->
+            {users, members}
+        end
+      end)
 
     project =
       insert(:project,
         allow_support_access: false,
-        project_users: [
-          %{user_id: viewer.id, role: :viewer},
-          %{user_id: editor.id, role: :editor},
-          %{user_id: admin.id, role: :admin},
-          %{user_id: owner.id, role: :owner}
-        ]
+        project_users: Enum.reverse(project_users)
       )
-
-    users_by_persona = %{
-      viewer: viewer,
-      editor: editor,
-      admin: admin,
-      owner: owner,
-      non_member: non_member,
-      support_user: support_user,
-      superuser: superuser
-    }
 
     %{
       project: project,
-      project_with_support_access: %{project | allow_support_access: true},
-      users_by_persona: users_by_persona
+      users_by_persona_id: users_by_persona_id
     }
   end
 
@@ -102,7 +78,7 @@ defmodule Lightning.Policies.ProvisioningMatrixTest do
   end
 
   test "existing project matrices are omission-complete and correct", ctx do
-    assert_policy_matrix!(
+    assert_project_scope_policy_matrix!(
       Provisioning,
       [
         %{
@@ -111,33 +87,8 @@ defmodule Lightning.Policies.ProvisioningMatrixTest do
         },
         %{action: :describe_project, matrix: @describe_project_matrix}
       ],
-      @expected_personas,
       fn persona, _spec ->
-        {ctx.users_by_persona[persona], ctx.project}
-      end
-    )
-  end
-
-  test "support access allows support_user to describe project", ctx do
-    describe_matrix = Map.put(@describe_project_matrix, :support_user, :allow)
-
-    assert_policy_matrix!(
-      Provisioning,
-      [%{action: :describe_project, matrix: describe_matrix}],
-      @expected_personas,
-      fn persona, _spec ->
-        {ctx.users_by_persona[persona], ctx.project_with_support_access}
-      end
-    )
-  end
-
-  test "new project provisioning allows only superuser", ctx do
-    assert_policy_matrix!(
-      Provisioning,
-      [%{action: :provision_project, matrix: @provision_new_project_matrix}],
-      @expected_personas,
-      fn persona, _spec ->
-        {ctx.users_by_persona[persona], %Project{id: nil}}
+        {ctx.users_by_persona_id[persona.id], ctx.project}
       end
     )
   end

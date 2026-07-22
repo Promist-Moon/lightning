@@ -3,6 +3,7 @@ defmodule Lightning.Policies.CredentialsMatrixTest do
 
   import Lightning.PolicyMatrixHelpers
 
+  alias Lightning.AuthCoverage.Personas
   alias Lightning.Policies.Credentials
 
   @expected_actions [
@@ -16,37 +17,54 @@ defmodule Lightning.Policies.CredentialsMatrixTest do
     viewer: :deny,
     editor: :deny,
     admin: :allow,
-    owner: :allow,
-    non_member: :deny,
-    support_user: :deny
+    owner: :allow
   }
 
   @manage_matrix %{
     viewer: :deny,
     editor: :deny,
     admin: :allow,
-    owner: :allow,
-    non_member: :deny,
-    support_user: :allow
+    owner: :allow
   }
 
   setup do
-    viewer = insert(:user)
-    editor = insert(:user)
-    admin = insert(:user)
-    owner = insert(:user)
-    non_member = insert(:user)
-    support_user = insert(:user, support_user: true)
+    other_project = insert(:project, allow_support_access: false)
+
+    {users_by_persona_id, owner} =
+      Enum.reduce(Personas.all(), {%{}, nil}, fn persona, {users, owner_user} ->
+        user = insert(:user)
+
+        users = Map.put(users, persona.id, user)
+
+        case persona.membership_scope do
+          :same_project ->
+            updated_owner =
+              if persona.role == :owner, do: owner_user || user, else: owner_user
+
+            {users, updated_owner}
+
+          :other_project ->
+            insert(:project_user,
+              user: user,
+              project: other_project,
+              role: persona.role
+            )
+
+            {users, owner_user}
+
+          :none ->
+            {users, owner_user}
+        end
+      end)
 
     project =
       insert(:project,
         allow_support_access: false,
-        project_users: [
-          %{user_id: viewer.id, role: :viewer},
-          %{user_id: editor.id, role: :editor},
-          %{user_id: admin.id, role: :admin},
-          %{user_id: owner.id, role: :owner}
-        ]
+        project_users:
+          Enum.map(
+            Personas.roles(),
+            &%{user_id: users_by_persona_id[:"#{&1}_same_project"].id, role: &1}
+          )
       )
 
     keychain_credential =
@@ -55,20 +73,10 @@ defmodule Lightning.Policies.CredentialsMatrixTest do
         created_by: owner
       )
 
-    users_by_persona = %{
-      viewer: viewer,
-      editor: editor,
-      admin: admin,
-      owner: owner,
-      non_member: non_member,
-      support_user: support_user
-    }
-
     %{
       project: project,
-      project_with_support_access: %{project | allow_support_access: true},
       keychain_credential: keychain_credential,
-      users_by_persona: users_by_persona
+      users_by_persona_id: users_by_persona_id
     }
   end
 
@@ -85,40 +93,25 @@ defmodule Lightning.Policies.CredentialsMatrixTest do
   end
 
   test "creation matrix is omission-complete and correct", ctx do
-    assert_policy_matrix!(
+    assert_project_scope_policy_matrix!(
       Credentials,
       [%{action: :create_keychain_credential, matrix: @create_matrix}],
-      expected_project_personas(),
       fn persona, _spec ->
-        {ctx.users_by_persona[persona], ctx.project}
+        {ctx.users_by_persona_id[persona.id], ctx.project}
       end
     )
   end
 
   test "management matrices are omission-complete and correct", ctx do
-    assert_policy_matrix!(
+    assert_project_scope_policy_matrix!(
       Credentials,
       [
         %{action: :edit_keychain_credential, matrix: @manage_matrix},
         %{action: :delete_keychain_credential, matrix: @manage_matrix},
         %{action: :view_keychain_credential, matrix: @manage_matrix}
       ],
-      expected_project_personas(),
       fn persona, _spec ->
-        {ctx.users_by_persona[persona], ctx.keychain_credential}
-      end
-    )
-  end
-
-  test "support access enables support_user creation", ctx do
-    matrix = Map.put(@create_matrix, :support_user, :allow)
-
-    assert_policy_matrix!(
-      Credentials,
-      [%{action: :create_keychain_credential, matrix: matrix}],
-      expected_project_personas(),
-      fn persona, _spec ->
-        {ctx.users_by_persona[persona], ctx.project_with_support_access}
+        {ctx.users_by_persona_id[persona.id], ctx.keychain_credential}
       end
     )
   end

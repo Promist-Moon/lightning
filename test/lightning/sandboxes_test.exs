@@ -2370,6 +2370,34 @@ defmodule Lightning.Projects.SandboxesTest do
   end
 
   describe "schedule_sandbox_deletion/2" do
+    test "allows admin/owner members of the sandbox project" do
+      Enum.each([:admin, :owner], fn role ->
+        actor = insert(:user)
+        parent = insert(:project, name: "parent")
+        sandbox = insert(:project, name: "sandbox", parent: parent)
+        ensure_member!(sandbox, actor, role)
+
+        assert {:ok, _scheduled} =
+                 Sandboxes.schedule_sandbox_deletion(sandbox, actor)
+      end)
+    end
+
+    test "rejects viewer and non-members" do
+      parent = insert(:project, name: "parent")
+      sandbox = insert(:project, name: "sandbox", parent: parent)
+
+      viewer = insert(:user)
+      ensure_member!(sandbox, viewer, :viewer)
+
+      assert {:error, :unauthorized} =
+               Sandboxes.schedule_sandbox_deletion(sandbox, viewer)
+
+      outsider = insert(:user)
+
+      assert {:error, :unauthorized} =
+               Sandboxes.schedule_sandbox_deletion(sandbox, outsider)
+    end
+
     test "sets scheduled_deletion on the target sandbox" do
       actor = insert(:user)
       parent = insert(:project, name: "parent")
@@ -2564,6 +2592,42 @@ defmodule Lightning.Projects.SandboxesTest do
   end
 
   describe "cancel_scheduled_sandbox_deletion/2" do
+    test "allows admin/owner members of the sandbox project" do
+      Enum.each([:admin, :owner], fn role ->
+        scheduler = insert(:user)
+        actor = insert(:user)
+        parent = insert(:project, name: "parent")
+        sandbox = insert(:project, name: "sandbox", parent: parent)
+
+        ensure_member!(sandbox, scheduler, :admin)
+        {:ok, _} = Sandboxes.schedule_sandbox_deletion(sandbox, scheduler)
+        ensure_member!(sandbox, actor, role)
+
+        assert {:ok, _restored} =
+                 Sandboxes.cancel_scheduled_sandbox_deletion(sandbox, actor)
+      end)
+    end
+
+    test "rejects viewer and non-members" do
+      scheduler = insert(:user)
+      parent = insert(:project, name: "parent")
+      sandbox = insert(:project, name: "sandbox", parent: parent)
+
+      ensure_member!(sandbox, scheduler, :admin)
+      {:ok, _} = Sandboxes.schedule_sandbox_deletion(sandbox, scheduler)
+
+      viewer = insert(:user)
+      ensure_member!(sandbox, viewer, :viewer)
+
+      assert {:error, :unauthorized} =
+               Sandboxes.cancel_scheduled_sandbox_deletion(sandbox, viewer)
+
+      outsider = insert(:user)
+
+      assert {:error, :unauthorized} =
+               Sandboxes.cancel_scheduled_sandbox_deletion(sandbox, outsider)
+    end
+
     test "clears scheduled_deletion on the target sandbox" do
       actor = insert(:user)
       parent = insert(:project, name: "parent")

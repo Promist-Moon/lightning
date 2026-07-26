@@ -5,6 +5,8 @@ defmodule LightningWeb.WorkflowLive.CollaborateTest do
   import Lightning.WorkflowsFixtures
   import Phoenix.LiveViewTest
 
+  alias Lightning.AuthCoverage.Personas
+
   describe "sandbox indicator banner data attributes" do
     test "sets root project data attributes to the user's access root in a sandbox project",
          %{conn: conn} do
@@ -168,52 +170,93 @@ defmodule LightningWeb.WorkflowLive.CollaborateTest do
   end
 
   describe "cross-project access" do
-    test "redirects to the project workflows when the workflow belongs to another project",
-         %{conn: conn} do
-      user = insert(:user)
-
-      user_project =
-        insert(:project, project_users: [%{user_id: user.id, role: :owner}])
-
+    setup do
+      project = insert(:project)
       other_project = insert(:project)
-      other_workflow = workflow_fixture(project_id: other_project.id)
 
-      conn = log_in_user(conn, user)
+      actors_by_persona_id =
+        Enum.reduce(Personas.all(), %{}, fn persona, acc ->
+          user = insert(:user)
 
-      assert {:error, {:redirect, %{to: to, flash: flash}}} =
-               live(
-                 conn,
-                 ~p"/projects/#{user_project.id}/w/#{other_workflow.id}"
-               )
+          case persona.membership_scope do
+            :same_project ->
+              insert(:project_user,
+                user: user,
+                project: project,
+                role: persona.role
+              )
 
-      assert to == ~p"/projects/#{user_project.id}/w"
-      assert flash["error"] == "Workflow not found"
+            :other_project ->
+              insert(:project_user,
+                user: user,
+                project: other_project,
+                role: persona.role
+              )
+
+            :none ->
+              :ok
+          end
+
+          Map.put(acc, persona.id, user)
+        end)
+
+      %{
+        project: project,
+        other_project: other_project,
+        actors_by_persona_id: actors_by_persona_id
+      }
     end
 
-    test "the ?run= param loads a run scoped to the mounted project", %{
-      conn: conn
-    } do
-      user = insert(:user)
+    test "redirects to the project workflows when the workflow belongs to another project",
+         %{project: project, other_project: other_project} = ctx do
+      other_workflow = workflow_fixture(project_id: other_project.id)
 
-      user_project =
-        insert(:project, project_users: [%{user_id: user.id, role: :owner}])
+      Enum.each(Personas.all(), fn persona ->
+        conn =
+          build_conn()
+          |> log_in_user(ctx.actors_by_persona_id[persona.id])
 
-      own_workflow = workflow_fixture(project_id: user_project.id)
+        assert {:error, {:redirect, %{to: to, flash: flash}}} =
+                 live(
+                   conn,
+                   ~p"/projects/#{project.id}/w/#{other_workflow.id}"
+                 )
+
+        case persona.membership_scope do
+          :same_project ->
+            assert to == ~p"/projects/#{project.id}/w"
+            assert flash["error"] == "Workflow not found"
+
+          _ ->
+            assert to == "/projects"
+        end
+      end)
+    end
+
+    test "the ?run= param loads a run scoped to the mounted project",
+         %{
+           project: project
+         } = ctx do
+      own_workflow = workflow_fixture(project_id: project.id)
       foreign_run = run_in_project(insert(:project))
 
-      conn = log_in_user(conn, user)
+      Enum.each(Personas.same_project_members(), fn persona ->
+        conn =
+          build_conn()
+          |> log_in_user(ctx.actors_by_persona_id[persona.id])
 
-      {:ok, view, _html} =
-        live(conn, ~p"/projects/#{user_project.id}/w/#{own_workflow.id}")
+        {:ok, view, _html} =
+          live(conn, ~p"/projects/#{project.id}/w/#{own_workflow.id}")
 
-      render_patch(
-        view,
-        ~p"/projects/#{user_project.id}/w/#{own_workflow.id}?run=#{foreign_run.id}"
-      )
+        render_patch(
+          view,
+          ~p"/projects/#{project.id}/w/#{own_workflow.id}?run=#{foreign_run.id}"
+        )
 
-      %{socket: socket} = :sys.get_state(view.pid)
+        %{socket: socket} = :sys.get_state(view.pid)
 
-      assert socket.assigns[:initial_run_data] == nil
+        assert socket.assigns[:initial_run_data] == nil
+      end)
     end
   end
 

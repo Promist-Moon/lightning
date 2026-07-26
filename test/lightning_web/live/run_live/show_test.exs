@@ -5,6 +5,7 @@ defmodule LightningWeb.RunLive.ShowTest do
   import Lightning.Factories
   import Lightning.WorkflowLive.Helpers
 
+  alias Lightning.AuthCoverage.Personas
   alias Lightning.WorkOrders
   alias LightningWeb.LiveHelpers
 
@@ -13,32 +14,102 @@ defmodule LightningWeb.RunLive.ShowTest do
   setup :stub_rate_limiter_ok
 
   describe "cross-project access" do
-    setup :register_and_log_in_user
-    setup :create_project_for_current_user
+    setup do
+      project = insert(:project)
+      other_project = insert(:project)
 
-    test "redirects to project history when the run belongs to another project",
-         %{conn: conn, project: project} do
-      run = run_in_project(insert(:project))
+      actors_by_persona_id =
+        Enum.reduce(Personas.all(), %{}, fn persona, acc ->
+          user = insert(:user)
 
-      assert {:error, {:redirect, %{to: to, flash: flash}}} =
-               live(conn, ~p"/projects/#{project.id}/runs/#{run.id}")
+          case persona.membership_scope do
+            :same_project ->
+              insert(:project_user,
+                user: user,
+                project: project,
+                role: persona.role
+              )
 
-      assert to == ~p"/projects/#{project.id}/history"
-      assert flash["error"] == "Run not found"
+            :other_project ->
+              insert(:project_user,
+                user: user,
+                project: other_project,
+                role: persona.role
+              )
+
+            :none ->
+              :ok
+          end
+
+          Map.put(acc, persona.id, user)
+        end)
+
+      %{
+        project: project,
+        other_project: other_project,
+        actors_by_persona_id: actors_by_persona_id
+      }
     end
 
-    test "redirects to project history when the run does not exist", %{
-      conn: conn,
-      project: project
-    } do
-      assert {:error, {:redirect, %{to: to, flash: flash}}} =
-               live(
-                 conn,
-                 ~p"/projects/#{project.id}/runs/#{Ecto.UUID.generate()}"
-               )
+    test "redirects to project history when the run belongs to another project",
+         %{project: project, other_project: other_project} = ctx do
+      run = run_in_project(other_project)
 
-      assert to == ~p"/projects/#{project.id}/history"
-      assert flash["error"] == "Run not found"
+      Enum.each(Personas.all(), fn persona ->
+        conn =
+          build_conn()
+          |> log_in_user(ctx.actors_by_persona_id[persona.id])
+
+        assert {:error, {:redirect, %{to: to, flash: flash}}} =
+                 live(conn, ~p"/projects/#{project.id}/runs/#{run.id}")
+
+        case persona.membership_scope do
+          :same_project ->
+            assert to == ~p"/projects/#{project.id}/history"
+            assert flash["error"] == "Run not found"
+
+          _ ->
+            assert to == "/projects"
+        end
+      end)
+    end
+
+    test "redirects to project history when the run does not exist",
+         %{
+           project: project
+         } = ctx do
+      Enum.each(Personas.same_project_members(), fn persona ->
+        conn =
+          build_conn()
+          |> log_in_user(ctx.actors_by_persona_id[persona.id])
+
+        assert {:error, {:redirect, %{to: to, flash: flash}}} =
+                 live(
+                   conn,
+                   ~p"/projects/#{project.id}/runs/#{Ecto.UUID.generate()}"
+                 )
+
+        assert to == ~p"/projects/#{project.id}/history"
+        assert flash["error"] == "Run not found"
+      end)
+    end
+
+    test "project non-members are denied at project scope before run lookup",
+         %{project: project} = ctx do
+      Enum.each(
+        Enum.filter(Personas.all(), &(&1.membership_scope != :same_project)),
+        fn persona ->
+          conn =
+            build_conn()
+            |> log_in_user(ctx.actors_by_persona_id[persona.id])
+
+          assert {:error, {:redirect, %{to: "/projects"}}} =
+                   live(
+                     conn,
+                     ~p"/projects/#{project.id}/runs/#{Ecto.UUID.generate()}"
+                   )
+        end
+      )
     end
   end
 

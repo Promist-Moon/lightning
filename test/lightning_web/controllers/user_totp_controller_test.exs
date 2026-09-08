@@ -1,7 +1,8 @@
 defmodule LightningWeb.UserTOTPControllerTest do
-  use LightningWeb.ConnCase, async: true
+  use LightningWeb.ConnCase, async: false
 
   import Lightning.Factories
+  import Mock
 
   @totp_session :user_totp_pending
 
@@ -116,6 +117,50 @@ defmodule LightningWeb.UserTOTPControllerTest do
 
       assert redirected_to(conn) == "/return_here"
       assert get_session(conn, @totp_session) == nil
+    end
+
+    test "returns the generic invalid message when rate limited", %{
+      conn: conn,
+      user: user
+    } do
+      code = NimbleTOTP.verification_code(user.user_totp.secret)
+
+      with_mock(Hammer, [:passthrough],
+        check_rate: fn _, _, _ ->
+          {:deny, 5}
+        end
+      ) do
+        conn =
+          post(conn, Routes.user_totp_path(conn, :create), %{
+            "user" => %{"code" => code, "authentication_type" => "totp"}
+          })
+
+        response = html_response(conn, 200)
+        assert response =~ "Invalid two-factor authentication code"
+        refute get_session(conn, @totp_session) == nil
+      end
+    end
+
+    test "fails closed when the limiter is unavailable", %{
+      conn: conn,
+      user: user
+    } do
+      code = NimbleTOTP.verification_code(user.user_totp.secret)
+
+      with_mock(Hammer, [:passthrough],
+        check_rate: fn _, _, _ ->
+          {:error, :backend_unavailable}
+        end
+      ) do
+        conn =
+          post(conn, Routes.user_totp_path(conn, :create), %{
+            "user" => %{"code" => code, "authentication_type" => "totp"}
+          })
+
+        response = html_response(conn, 200)
+        assert response =~ "Invalid two-factor authentication code"
+        refute get_session(conn, @totp_session) == nil
+      end
     end
   end
 

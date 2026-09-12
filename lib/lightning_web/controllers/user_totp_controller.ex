@@ -2,6 +2,7 @@ defmodule LightningWeb.UserTOTPController do
   use LightningWeb, :controller
 
   alias Lightning.Accounts
+  alias Lightning.TotpRateLimit
   alias LightningWeb.UserAuth
 
   require Logger
@@ -68,25 +69,34 @@ defmodule LightningWeb.UserTOTPController do
   end
 
   defp two_factor_attempt_allowed?(%{id: id}) do
-    case Hammer.check_rate(
-           "#{@two_factor_bucket}::#{id}",
-           @two_factor_window,
-           @two_factor_limit
-         ) do
-      {:allow, _count} ->
-        true
+    try do
+      case TotpRateLimit.hit(
+             "#{@two_factor_bucket}::#{id}",
+             @two_factor_window,
+             @two_factor_limit
+           ) do
+        {:allow, _count} ->
+          true
 
-      {:deny, _limit} ->
-        false
-
-      {:error, reason} ->
-        Logger.warning(
-          "Two-factor verification rate limiter unavailable, denying verification: " <>
-            inspect(reason)
-        )
-
-        false
+        {:deny, _limit} ->
+          false
+      end
+    rescue
+      error ->
+        log_and_deny(error)
+    catch
+      kind, reason ->
+        log_and_deny({kind, reason})
     end
+  end
+
+  defp log_and_deny(reason) do
+    Logger.warning(
+      "Two-factor verification rate limiter unavailable, denying verification: " <>
+        inspect(reason)
+    )
+
+    false
   end
 
   defp render_invalid_code(conn, params) do

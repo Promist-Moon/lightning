@@ -159,6 +159,7 @@ defmodule Lightning.Application do
         Lightning.Workflows.Presence,
         LightningWeb.WorkerPresence,
         {Lightning.RateLimit, clean_period: :timer.minutes(10)},
+        {Lightning.TotpRateLimit, [clean_period: :timer.minutes(1)]},
         adaptor_registry_childspec,
         adaptor_service_childspec,
         {Lightning.TaskWorker, name: :cli_task_worker},

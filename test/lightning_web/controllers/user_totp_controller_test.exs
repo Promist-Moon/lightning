@@ -125,8 +125,8 @@ defmodule LightningWeb.UserTOTPControllerTest do
     } do
       code = NimbleTOTP.verification_code(user.user_totp.secret)
 
-      with_mock(Hammer, [:passthrough],
-        check_rate: fn _, _, _ ->
+      with_mock(Lightning.TotpRateLimit, [:passthrough],
+        hit: fn _, _, _ ->
           {:deny, 5}
         end
       ) do
@@ -147,9 +147,9 @@ defmodule LightningWeb.UserTOTPControllerTest do
     } do
       code = NimbleTOTP.verification_code(user.user_totp.secret)
 
-      with_mock(Hammer, [:passthrough],
-        check_rate: fn _, _, _ ->
-          {:error, :backend_unavailable}
+      with_mock(Lightning.TotpRateLimit, [:passthrough],
+        hit: fn _, _, _ ->
+          raise "backend unavailable"
         end
       ) do
         conn =

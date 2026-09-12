@@ -13,8 +13,6 @@ defmodule Lightning.Application do
     :mnesia.stop()
     :mnesia.create_schema([node()])
     :mnesia.start()
-    Hammer.Backend.Mnesia.create_mnesia_table(disc_copies: [node()])
-    :mnesia.wait_for_tables([:__hammer_backend_mnesia], 60_000)
 
     # Only add the Sentry logger handler if a dsn is provided.
     if Application.get_env(:sentry, :dsn) do
@@ -160,6 +158,7 @@ defmodule Lightning.Application do
         LightningWeb.Endpoint,
         Lightning.Workflows.Presence,
         LightningWeb.WorkerPresence,
+        {Lightning.RateLimit, clean_period: :timer.minutes(10)},
         adaptor_registry_childspec,
         adaptor_service_childspec,
         {Lightning.TaskWorker, name: :cli_task_worker},

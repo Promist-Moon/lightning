@@ -5,6 +5,7 @@ defmodule Lightning.FailureAlerter do
 
   alias Lightning.Projects.MailRecipients
   alias Lightning.Projects.ProjectLimiter
+  alias Lightning.RateLimit
   alias Lightning.Run
 
   require Logger
@@ -83,7 +84,7 @@ defmodule Lightning.FailureAlerter do
     # rate limiting per workflow AND user
     bucket_key = "#{workflow_id}::#{recipient.id}"
 
-    Hammer.check_rate(
+    RateLimit.hit(
       bucket_key,
       time_scale,
       rate_limit
@@ -114,12 +115,7 @@ defmodule Lightning.FailureAlerter do
 
           _ ->
             # decrement the counter when email is not delivered
-            Hammer.check_rate_inc(
-              bucket_key,
-              time_scale,
-              rate_limit,
-              -1
-            )
+            refund_rate_limit_slot(bucket_key, time_scale)
 
             nil
             # {:cancel, "Failure email was not sent"} or Logger
@@ -129,5 +125,11 @@ defmodule Lightning.FailureAlerter do
         nil
         # {:cancel, "Failure notification rate limit is reached"} or Logger
     end
+  end
+
+  defp refund_rate_limit_slot(bucket_key, time_scale) do
+    current_count = RateLimit.get(bucket_key, time_scale)
+    _new_count = RateLimit.set(bucket_key, time_scale, max(current_count - 1, 0))
+    :ok
   end
 end

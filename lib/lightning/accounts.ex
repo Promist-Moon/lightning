@@ -17,6 +17,7 @@ defmodule Lightning.Accounts do
   alias Lightning.Accounts.UserNotifier
   alias Lightning.Accounts.UserToken
   alias Lightning.Accounts.UserTOTP
+  alias Lightning.RateLimit
   alias Lightning.Credentials
   alias Lightning.Projects
   alias Lightning.Repo
@@ -660,7 +661,7 @@ defmodule Lightning.Accounts do
 
   # Buckets are separate so spending one route's allowance cannot close another.
   defp confirmation_mail_allowed?(bucket, %User{id: id}) do
-    case Hammer.check_rate(
+    case RateLimit.hit(
            "#{bucket}::#{id}",
            @confirmation_mail_window,
            @confirmation_mail_limit

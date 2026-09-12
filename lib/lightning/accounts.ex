@@ -661,25 +661,34 @@ defmodule Lightning.Accounts do
 
   # Buckets are separate so spending one route's allowance cannot close another.
   defp confirmation_mail_allowed?(bucket, %User{id: id}) do
-    case RateLimit.hit(
-           "#{bucket}::#{id}",
-           @confirmation_mail_window,
-           @confirmation_mail_limit
-         ) do
-      {:allow, _count} ->
-        true
+    try do
+      case RateLimit.hit(
+             "#{bucket}::#{id}",
+             @confirmation_mail_window,
+             @confirmation_mail_limit
+           ) do
+        {:allow, _count} ->
+          true
 
-      {:deny, _limit} ->
-        false
-
-      {:error, reason} ->
-        Logger.warning(
-          "Confirmation mail rate limiter unavailable, allowing the send: " <>
-            inspect(reason)
-        )
-
-        true
+        {:deny, _limit} ->
+          false
+      end
+    rescue
+      error ->
+        log_confirmation_limiter_error(error)
+    catch
+      kind, reason ->
+        log_confirmation_limiter_error({kind, reason})
     end
+  end
+
+  defp log_confirmation_limiter_error(reason) do
+    Logger.warning(
+      "Confirmation mail rate limiter unavailable, allowing the send: " <>
+        inspect(reason)
+    )
+
+    true
   end
 
   @doc """

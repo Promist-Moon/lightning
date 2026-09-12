@@ -91,6 +91,8 @@ defmodule LightningWeb.UserTOTPController do
   end
 
   defp log_and_deny(reason) do
+    # Fail closed on limiter errors: if throttling is unavailable here, allowing
+    # attempts would restore the unbounded guessing path we were meant to prevent.
     Logger.warning(
       "Two-factor verification rate limiter unavailable, denying verification: " <>
         inspect(reason)

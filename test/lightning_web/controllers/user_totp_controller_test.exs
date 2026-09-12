@@ -267,6 +267,34 @@ defmodule LightningWeb.UserTOTPControllerTest do
   end
 
   describe "POST /users/two-factor using backup code" do
+    test "valid backup code is denied when shared rate-limit bucket is exhausted",
+         %{conn: conn, user: user} do
+      exhausted_conn =
+        Enum.reduce(1..@two_factor_limit, conn, fn _, acc ->
+          post(acc, Routes.user_totp_path(acc, :create), %{
+            "user" => %{
+              "code" => "000000",
+              "authentication_type" => "totp"
+            }
+          })
+        end)
+
+      backup_code = Enum.random(user.backup_codes)
+
+      denied_conn =
+        post(exhausted_conn, Routes.user_totp_path(exhausted_conn, :create), %{
+          "user" => %{
+            "code" => backup_code.code,
+            "authentication_type" => "backup_code"
+          }
+        })
+
+      assert html_response(denied_conn, 200) =~
+               "Invalid two-factor authentication code"
+
+      refute get_session(denied_conn, @totp_session) == nil
+    end
+
     test "validates the backup code correctly", %{conn: conn, user: user} do
       backup_code = Enum.random(user.backup_codes)
 
